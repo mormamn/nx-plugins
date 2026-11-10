@@ -103,6 +103,41 @@ export class UVProvider extends BaseProvider<UVPyprojectToml> {
     return this._rootLockfile;
   }
 
+  private readonly nestedLockfiles = new Map<string, UVLockfile>();
+
+  private nestedWorkspaceRoot(projectRoot: string): string | null {
+    if (this.isWorkspace) {
+      return null;
+    }
+
+    let dir = path.posix.dirname(projectRoot);
+    while (dir !== '.' && dir !== '/') {
+      if (
+        this.fileExists(joinPathFragments(dir, this.lockFileName)) &&
+        this.getPyprojectToml(dir)?.tool?.uv?.workspace
+      ) {
+        return dir;
+      }
+      dir = path.posix.dirname(dir);
+    }
+
+    return null;
+  }
+
+  private lockfileFor(uvRoot: string | null): UVLockfile {
+    if (!uvRoot) {
+      return this.rootLockfile;
+    }
+    if (!this.nestedLockfiles.has(uvRoot)) {
+      this.nestedLockfiles.set(
+        uvRoot,
+        getUvLockfile(joinPathFragments(uvRoot, this.lockFileName), this.tree),
+      );
+    }
+
+    return this.nestedLockfiles.get(uvRoot);
+  }
+
   public async checkPrerequisites(): Promise<void> {
     await checkUvExecutable();
   }
@@ -362,7 +397,8 @@ export class UVProvider extends BaseProvider<UVPyprojectToml> {
 
     if (this.fileExists(pyprojectToml)) {
       const tomlData = this.getPyprojectToml(projectData.root);
-      const sources = this.sources(tomlData);
+      const uvRoot = this.nestedWorkspaceRoot(projectData.root);
+      const sources = this.sources(tomlData, uvRoot);
       const packageName = tomlData?.project?.name ?? projectName;
 
       deps.push(
@@ -373,6 +409,7 @@ export class UVProvider extends BaseProvider<UVPyprojectToml> {
           tomlData?.project?.dependencies || [],
           'main',
           projects,
+          uvRoot,
         ),
       );
 
@@ -390,6 +427,7 @@ export class UVProvider extends BaseProvider<UVPyprojectToml> {
             optionalDependencies[extra],
             extra,
             projects,
+            uvRoot,
           ),
         );
       }
@@ -403,6 +441,7 @@ export class UVProvider extends BaseProvider<UVPyprojectToml> {
             tomlData['dependency-groups'][group],
             group,
             projects,
+            uvRoot,
           ),
         );
       }
@@ -1067,12 +1106,15 @@ export class UVProvider extends BaseProvider<UVPyprojectToml> {
 
   private sources(
     projectPyprojectToml: UVPyprojectToml | undefined,
+    uvRoot: string | null = null,
   ): UVPyprojectToml['tool']['uv']['sources'] {
-    if (!this.isWorkspace) {
+    if (!this.isWorkspace && !uvRoot) {
       return projectPyprojectToml?.tool?.uv?.sources ?? {};
     }
 
-    const rootPyprojectToml = this.getPyprojectToml(this.workspaceRoot);
+    const rootPyprojectToml = this.getPyprojectToml(
+      uvRoot ?? this.workspaceRoot,
+    );
     return {
       ...(rootPyprojectToml?.tool?.uv?.sources ?? {}),
       ...(projectPyprojectToml?.tool?.uv?.sources ?? {}),
@@ -1086,6 +1128,7 @@ export class UVProvider extends BaseProvider<UVPyprojectToml> {
     dependencies: string[],
     category: string,
     projects: Record<string, ProjectConfiguration>,
+    uvRoot: string | null = null,
   ) {
     const deps: Dependency[] = [];
 
@@ -1095,7 +1138,7 @@ export class UVProvider extends BaseProvider<UVPyprojectToml> {
         continue;
       }
 
-      if (this.isWorkspace) {
+      if (this.isWorkspace || uvRoot) {
         this.appendWorkspaceDependencyToDeps(
           packageName,
           normalizedDep,
@@ -1103,6 +1146,7 @@ export class UVProvider extends BaseProvider<UVPyprojectToml> {
           sources,
           projects,
           deps,
+          uvRoot,
         );
       } else {
         this.appendIndividualDependencyToDeps(
@@ -1126,12 +1170,14 @@ export class UVProvider extends BaseProvider<UVPyprojectToml> {
     sources: UVPyprojectToml['tool']['uv']['sources'],
     projects: Record<string, ProjectConfiguration>,
     deps: Dependency[],
+    uvRoot: string | null = null,
   ): void {
     if (!sources[dependencyName]?.workspace) {
       return;
     }
 
-    const packageMetadata = this.rootLockfile.package[packageName]?.metadata;
+    const packageMetadata =
+      this.lockfileFor(uvRoot)?.package[packageName]?.metadata;
 
     // Runtime and extra requirements are both recorded in `requires-dist`
     // (extras carry an `extra == "..."` marker); only dependency groups live in
@@ -1148,7 +1194,7 @@ export class UVProvider extends BaseProvider<UVPyprojectToml> {
     const depProjectName = Object.keys(projects).find(
       (proj) =>
         path.normalize(projects[proj].root) ===
-        path.normalize(depMetadata.editable),
+        path.normalize(path.join(uvRoot ?? '', depMetadata.editable)),
     );
 
     if (!depProjectName) {

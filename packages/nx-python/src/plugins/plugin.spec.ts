@@ -1200,6 +1200,101 @@ describe('nx-python dependency graph', () => {
         ]);
       });
 
+      it('should progress the dependency graph when the uv workspace root is in a subdirectory', async () => {
+        vol.fromJSON({
+          'python/apps/app1/pyproject.toml': dedent`
+          [project]
+          name = "app1"
+          version = "0.1.0"
+          readme = "README.md"
+          requires-python = ">=3.12"
+          dependencies = [
+              "dep1",
+          ]
+
+          [tool.hatch.build.targets.wheel]
+          packages = ["app1"]
+
+          [tool.uv.sources]
+          dep1 = { workspace = true }
+          `,
+
+          'python/libs/dep1/pyproject.toml': dedent`
+          [project]
+          name = "dep1"
+          version = "0.1.0"
+          readme = "README.md"
+          requires-python = ">=3.12"
+          dependencies = []
+          `,
+
+          'python/pyproject.toml': dedent`
+          [tool.uv.workspace]
+          members = ["apps/*", "libs/*"]
+          `,
+
+          'python/uv.lock': dedent`
+          version = 1
+          requires-python = ">=3.12"
+
+          [[package]]
+          name = "app1"
+          version = "0.1.0"
+          source = { editable = "apps/app1" }
+          dependencies = [
+              { name = "dep1" },
+          ]
+
+          [package.metadata]
+          requires-dist = [
+              { name = "dep1", editable = "libs/dep1" },
+          ]
+
+          [[package]]
+          name = "dep1"
+          version = "0.1.0"
+          source = { editable = "libs/dep1" }
+          `,
+        });
+
+        const projects = {
+          app1: {
+            root: 'python/apps/app1',
+            targets: {},
+          },
+          dep1: {
+            root: 'python/libs/dep1',
+            targets: {},
+          },
+        };
+
+        const result = await createDependencies(
+          { packageManager: 'uv' },
+          {
+            externalNodes: {},
+            workspaceRoot: '.',
+            projects,
+            nxJsonConfiguration: {},
+            fileMap: {
+              nonProjectFiles: [],
+              projectFileMap: {},
+            },
+            filesToProcess: {
+              nonProjectFiles: [],
+              projectFileMap: {},
+            },
+          },
+        );
+
+        expect(result).toStrictEqual([
+          {
+            source: 'app1',
+            target: 'dep1',
+            type: 'implicit',
+          },
+        ]);
+      });
+
       it('should progress the dependency graph for an empty project', async () => {
         const result = await createDependencies(null, {
           externalNodes: {},
